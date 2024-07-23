@@ -10,27 +10,109 @@ on:
   pull_request:
     branches: [ "master" ]
 
-  # Allows you to run this workflow manually from the Actions tab
-  workflow_dispatch:
-
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
-  build:
-    # The type of runner that the job will run on
+  checkout:
     runs-on: ubuntu-latest
-
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
-
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
-        run: echo Hello, world!
-
-      # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
+      - name: checkout source code
         run: |
-          echo Add other actions to build,
-          echo test, and deploy your project.
+          echo "Checkout of code is done"
+          git clone https://github.com/juice-shop/juice-shop.git
+      - name: Archive artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: source-code
+          path: .
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [checkout]
+    steps:
+      - name: Build
+        uses: actions/download-artifact@v2
+        with:
+          name: source-code
+      - name: Build with Artifacts
+        run: |
+          echo "Code build is done"
+          #cd ${{ github.workspace }}/juice-shop
+          cd juice-shop
+          npm install
+      #- name: Archive artifacts of build
+      #  uses: actions/upload-artifact@v2
+      #  with:
+      #    name: build-code
+      #    path: .
+
+  sast:
+    needs: [checkout, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v2
+        with:
+          name: source-code
+      - name: SAST Security Test
+        run: |
+          echo "run SAST security checks"
+          cd juice-shop
+          docker run -t --name sast -v ./:/path checkmarx/kics:latest scan -p /path -o "/path/" || true
+          #if [[ "$(docker logs sast &> sast.log;  cat sast.log | grep 'HIGH' | tail -n 1 | awk '{print $2;}')" != 0 ]]; then echo "failed due to sast security
+          #issues"; exit 1; else echo "All Good to proceed"; exit 0; fi
+
+  sca:
+    runs-on: ubuntu-latest
+    needs: [checkout, build]
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v2
+        with:
+          name: source-code
+      - name: SCA Security Test
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          echo "run SCA security checks"
+          cd juice-shop
+          npm install
+          docker run --name sca -e SNYK_TOKEN=$SNYK_TOKEN -v ./:/app snyk/snyk:node || true
+          #if [[ "$(docker logs sca &> sca.log; cat sca.log | grep -o 'found [1-9]\d* issues' | awk '{print $2;}')" != 0 ]]; then echo "failed due to sca security
+          #issues"; exit 1; else echo "All Good to proceed"; exit 0; fi
+
+  containerscan:
+    runs-on: ubuntu-latest
+    needs: [ checkout, build ]
+    steps:
+      - name: Container Security Scanning
+        run: |
+          echo "Security Testing Container"
+          docker pull bkimminich/juice-shop
+          docker run --name containersecurity -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image bkimminich/juice-shop || true
+          #if [[ "$(docker logs containersecurity &> containersecurity.log;  cat containersecurity.log | grep -o 'CRITICAL: [1-9]\d*'  | awk '{print $2;}')" -gt 0 ]]; then echo "failed due to container security
+          #issues"; exit 1; else echo "All Good to proceed"; exit 0; fi
+
+  dast:
+    runs-on: ubuntu-latest
+    needs: [checkout, build ]
+    steps:
+      - name: Vulnerability Scanning
+        run: |
+          echo "DAST Security Testing"
+          docker run -d -p 3000:3000 --name juiceshop bkimminich/juice-shop
+          juiceip=$(docker inspect -f "{{.NetworkSettings.Networks.bridge.IPAddress }}" juiceshop)
+          docker run -t --name dast ghcr.io/zaproxy/zaproxy:stable zap-baseline.py -t http://$juiceip:3000 || true
+          docker logs dast &> dast.log
+          #if [[ "$(docker logs dast &> dast.log; tail -n 1 dast.log | grep -o 'WARN-NEW. [1-9]\d*' | awk '{print $2;}')" -gt 0 ]]; then echo "failed due to dast security
+          #issues"; exit 1; else echo "All Good to proceed"; exit 0; fi
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [checkout, build, containerscan, sca, sast, dast]
+    steps:
+     - name: application deploymnent
+       run: |
+         echo "Deployment Completed"
+         java -version
+         python --version
+
+
